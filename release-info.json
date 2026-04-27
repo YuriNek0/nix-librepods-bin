@@ -1,0 +1,34 @@
+{
+  "source": {
+    "repository": "kavishdevar/librepods",
+    "workflow": "ci-linux-rust.yml",
+    "branch": "linux/rust",
+    "runId": 0,
+    "runNumber": 0,
+    "runAttempt": 0,
+    "runUrl": "",
+    "headSha": "",
+    "headCommitUrl": "",
+    "actor": "",
+    "startedAt": "",
+    "updatedAt": ""
+  },
+  "release": {
+    "repository": "",
+    "tag": "linux-rust-latest",
+    "version": "run-0.0",
+    "updatedAt": ""
+  },
+  "assets": {
+    "librepods": {
+      "name": "librepods",
+      "url": "https://example.invalid/librepods",
+      "sha256": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    },
+    "appImage": {
+      "name": "librepods-x86_64.AppImage",
+      "url": "https://example.invalid/librepods-x86_64.AppImage",
+      "sha256": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    }
+  }
+}

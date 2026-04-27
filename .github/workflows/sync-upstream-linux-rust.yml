@@ -1,0 +1,266 @@
+name: Sync upstream linux/rust artifacts
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: sync-upstream-linux-rust
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: kavishdevar/librepods
+  SOURCE_WORKFLOW: ci-linux-rust.yml
+  SOURCE_BRANCH: linux/rust
+  RELEASE_TAG: linux-rust-latest
+  RELEASE_TITLE: LibrePods Linux Rust (latest successful upstream CI)
+  UPSTREAM_GH_TOKEN: ${{ secrets.UPSTREAM_GH_TOKEN || github.token }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tracker repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Resolve latest successful upstream run
+        id: upstream
+        env:
+          GH_TOKEN: ${{ env.UPSTREAM_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          run_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows/${SOURCE_WORKFLOW}/runs" -f branch="${SOURCE_BRANCH}" -f status="success" -f per_page="1")"
+          run="$(jq '.workflow_runs[0]' <<<"${run_json}")"
+
+          run_id="$(jq -r '.id // empty' <<<"${run}")"
+          if [ -z "${run_id}" ]; then
+            echo "No successful upstream run found for ${SOURCE_REPO}:${SOURCE_BRANCH}" >&2
+            exit 1
+          fi
+
+          run_number="$(jq -r '.run_number' <<<"${run}")"
+          run_attempt="$(jq -r '.run_attempt' <<<"${run}")"
+          head_sha="$(jq -r '.head_sha' <<<"${run}")"
+          head_branch="$(jq -r '.head_branch' <<<"${run}")"
+          actor="$(jq -r '.actor.login // "unknown"' <<<"${run}")"
+          started_at="$(jq -r '.run_started_at' <<<"${run}")"
+          updated_at="$(jq -r '.updated_at' <<<"${run}")"
+          html_url="$(jq -r '.html_url' <<<"${run}")"
+          head_commit_url="https://github.com/${SOURCE_REPO}/commit/${head_sha}"
+
+          current_file_run_id=""
+          if [ -f release-info.json ]; then
+            current_file_run_id="$(jq -r '.source.runId // empty' release-info.json || true)"
+          fi
+
+          current_release_run_id=""
+          release_body="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.body // ""' 2>/dev/null || true)"
+          if [ -n "${release_body}" ]; then
+            current_release_run_id="$(printf '%s' "${release_body}" | grep -Eo 'Source Run ID: [0-9]+' | awk '{print $4}' || true)"
+          fi
+
+          if [ "${run_id}" = "${current_file_run_id}" ] && [ "${run_id}" = "${current_release_run_id}" ]; then
+            echo "up_to_date=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "up_to_date=false" >>"${GITHUB_OUTPUT}"
+          fi
+
+          {
+            echo "run_id=${run_id}"
+            echo "run_number=${run_number}"
+            echo "run_attempt=${run_attempt}"
+            echo "head_sha=${head_sha}"
+            echo "head_branch=${head_branch}"
+            echo "actor=${actor}"
+            echo "started_at=${started_at}"
+            echo "updated_at=${updated_at}"
+            echo "html_url=${html_url}"
+            echo "head_commit_url=${head_commit_url}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Download upstream artifacts
+        if: steps.upstream.outputs.up_to_date != 'true'
+        env:
+          GH_TOKEN: ${{ env.UPSTREAM_GH_TOKEN }}
+          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          rm -rf tmp-artifacts release-assets
+          mkdir -p tmp-artifacts release-assets
+
+          gh run download "${RUN_ID}" \
+            --repo "${SOURCE_REPO}" \
+            --dir tmp-artifacts \
+            --name librepods \
+            --name librepods-x86_64.AppImage
+
+          binary_path="$(find tmp-artifacts -type f -name 'librepods' | head -n 1 || true)"
+          appimage_path="$(find tmp-artifacts -type f -name 'librepods-x86_64.AppImage' | head -n 1 || true)"
+
+          if [ -z "${binary_path}" ] || [ -z "${appimage_path}" ]; then
+            echo "Could not locate required artifacts in upstream run ${RUN_ID}" >&2
+            find tmp-artifacts -type f -print
+            exit 1
+          fi
+
+          install -m755 "${binary_path}" release-assets/librepods
+          install -m755 "${appimage_path}" release-assets/librepods-x86_64.AppImage
+
+      - name: Generate release metadata
+        if: steps.upstream.outputs.up_to_date != 'true'
+        env:
+          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+          RUN_NUMBER: ${{ steps.upstream.outputs.run_number }}
+          RUN_ATTEMPT: ${{ steps.upstream.outputs.run_attempt }}
+          HEAD_SHA: ${{ steps.upstream.outputs.head_sha }}
+          HEAD_BRANCH: ${{ steps.upstream.outputs.head_branch }}
+          ACTOR: ${{ steps.upstream.outputs.actor }}
+          STARTED_AT: ${{ steps.upstream.outputs.started_at }}
+          UPDATED_AT: ${{ steps.upstream.outputs.updated_at }}
+          RUN_URL: ${{ steps.upstream.outputs.html_url }}
+          COMMIT_URL: ${{ steps.upstream.outputs.head_commit_url }}
+        run: |
+          set -euo pipefail
+
+          binary_sha_hex="$(sha256sum release-assets/librepods | awk '{print $1}')"
+          appimage_sha_hex="$(sha256sum release-assets/librepods-x86_64.AppImage | awk '{print $1}')"
+
+          binary_sha_sri="sha256-$(printf '%s' "${binary_sha_hex}" | xxd -r -p | base64 -w0)"
+          appimage_sha_sri="sha256-$(printf '%s' "${appimage_sha_hex}" | xxd -r -p | base64 -w0)"
+
+          generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          release_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          jq -n \
+            --arg sourceRepo "${SOURCE_REPO}" \
+            --arg workflow "${SOURCE_WORKFLOW}" \
+            --arg branch "${SOURCE_BRANCH}" \
+            --argjson runId "${RUN_ID}" \
+            --argjson runNumber "${RUN_NUMBER}" \
+            --argjson runAttempt "${RUN_ATTEMPT}" \
+            --arg runUrl "${RUN_URL}" \
+            --arg headSha "${HEAD_SHA}" \
+            --arg headCommitUrl "${COMMIT_URL}" \
+            --arg actor "${ACTOR}" \
+            --arg startedAt "${STARTED_AT}" \
+            --arg updatedAt "${UPDATED_AT}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg version "run-${RUN_NUMBER}.${RUN_ATTEMPT}" \
+            --arg generatedAt "${generated_at}" \
+            --arg librepodsUrl "${release_base_url}/librepods" \
+            --arg librepodsSha "${binary_sha_sri}" \
+            --arg appImageUrl "${release_base_url}/librepods-x86_64.AppImage" \
+            --arg appImageSha "${appimage_sha_sri}" \
+            '{
+              source: {
+                repository: $sourceRepo,
+                workflow: $workflow,
+                branch: $branch,
+                runId: $runId,
+                runNumber: $runNumber,
+                runAttempt: $runAttempt,
+                runUrl: $runUrl,
+                headSha: $headSha,
+                headCommitUrl: $headCommitUrl,
+                actor: $actor,
+                startedAt: $startedAt,
+                updatedAt: $updatedAt
+              },
+              release: {
+                repository: $repository,
+                tag: $tag,
+                version: $version,
+                updatedAt: $generatedAt
+              },
+              assets: {
+                librepods: {
+                  name: "librepods",
+                  url: $librepodsUrl,
+                  sha256: $librepodsSha
+                },
+                appImage: {
+                  name: "librepods-x86_64.AppImage",
+                  url: $appImageUrl,
+                  sha256: $appImageSha
+                }
+              }
+            }' > release-info.json
+
+          cp release-info.json release-assets/release-info.json
+          cp release-info.json release-assets/run-info.json
+
+          sha256sum release-assets/librepods release-assets/librepods-x86_64.AppImage > release-assets/SHA256SUMS
+
+          cat > release-assets/RELEASE_NOTES.md <<EOF
+          Tracks the latest successful upstream CI run from ${SOURCE_REPO}.
+
+          - Source workflow: ${SOURCE_WORKFLOW}
+          - Source branch: ${SOURCE_BRANCH}
+          - Source run: #${RUN_NUMBER} (attempt ${RUN_ATTEMPT})
+          - Source actor: ${ACTOR}
+          - Source run URL: ${RUN_URL}
+          - Source commit: ${HEAD_SHA}
+          - Source commit URL: ${COMMIT_URL}
+          - Upstream run started: ${STARTED_AT}
+          - Upstream run completed: ${UPDATED_AT}
+          - Synced at: ${generated_at}
+
+          Source Run ID: ${RUN_ID}
+          EOF
+
+      - name: Publish tracker release
+        if: steps.upstream.outputs.up_to_date != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TITLE}" \
+              --notes-file release-assets/RELEASE_NOTES.md
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TITLE}" \
+              --notes-file release-assets/RELEASE_NOTES.md \
+              --prerelease
+          fi
+
+          gh release upload "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            release-assets/librepods \
+            release-assets/librepods-x86_64.AppImage \
+            release-assets/SHA256SUMS \
+            release-assets/release-info.json \
+            release-assets/run-info.json \
+            --clobber
+
+      - name: Commit updated release-info.json
+        if: steps.upstream.outputs.up_to_date != 'true'
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- release-info.json; then
+            echo "release-info.json already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release-info.json
+          git commit -m "chore(release): sync upstream run #${{ steps.upstream.outputs.run_number }}"
+          git pull --rebase
+          git push
