@@ -39,46 +39,47 @@ jobs:
         run: |
           set -euo pipefail
 
-          workflows_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows")"
+          runs_tmp="$(mktemp)"
+          api_url="https://api.github.com/repos/${SOURCE_REPO}/actions/runs"
 
-          workflow_id=""
-          workflow_path=""
+          http_code="$(curl -sS \
+            -o "${runs_tmp}" \
+            -w '%{http_code}' \
+            --get "${api_url}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data-urlencode "branch=${SOURCE_BRANCH}" \
+            --data-urlencode "status=success" \
+            --data-urlencode "per_page=100")"
 
-          for candidate in "${SOURCE_WORKFLOW}" "${SOURCE_WORKFLOW_FALLBACK}"; do
-            [ -z "${candidate}" ] && continue
-
-            candidate_base="${candidate##*/}"
-            candidate_id="$(jq -r --arg candidate "${candidate}" --arg candidateBase "${candidate_base}" '
-              .workflows[]?
-              | select(
-                  (.path == $candidate)
-                  or (.path | endswith("/" + $candidateBase))
-                  or (.name == $candidate)
-                  or ((.id | tostring) == $candidate)
-                )
-              | .id
-            ' <<<"${workflows_json}" | head -n 1)"
-
-            if [ -n "${candidate_id}" ]; then
-              workflow_id="${candidate_id}"
-              workflow_path="$(jq -r --argjson id "${candidate_id}" '.workflows[]? | select(.id == $id) | .path' <<<"${workflows_json}" | head -n 1)"
-              break
-            fi
-          done
-
-          if [ -z "${workflow_id}" ]; then
-            echo "Could not resolve upstream workflow '${SOURCE_WORKFLOW}' (fallback '${SOURCE_WORKFLOW_FALLBACK}') in ${SOURCE_REPO}" >&2
-            echo "Available workflows:" >&2
-            jq -r '.workflows[]? | "- \(.name) [\(.path)]"' <<<"${workflows_json}" >&2
+          if [ "${http_code}" != "200" ]; then
+            api_message="$(jq -r '.message // "unknown error"' "${runs_tmp}" 2>/dev/null || true)"
+            echo "Failed to list workflow runs from ${SOURCE_REPO} (HTTP ${http_code}): ${api_message}" >&2
+            echo "GitHub docs: this endpoint requires read access to the repository; for private repos, PATs need 'repo' (classic) or Actions:read + Contents:read (fine-grained)." >&2
+            echo "See: https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository" >&2
             exit 1
           fi
 
-          run_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows/${workflow_id}/runs" -f branch="${SOURCE_BRANCH}" -f status="success" -f per_page="1")"
-          run="$(jq '.workflow_runs[0]' <<<"${run_json}")"
+          run="$(jq -c \
+            --arg wf "${SOURCE_WORKFLOW}" \
+            --arg wfFallback "${SOURCE_WORKFLOW_FALLBACK}" '
+              def normalize($w): if ($w | startswith(".github/workflows/")) then $w else ".github/workflows/" + $w end;
+              def present($w): ($w != null and $w != "");
+
+              [ .workflow_runs[]?
+                | select(
+                    (present($wf) and .path == normalize($wf))
+                    or (present($wfFallback) and .path == normalize($wfFallback))
+                  )
+              ][0]
+            ' "${runs_tmp}")"
 
           run_id="$(jq -r '.id // empty' <<<"${run}")"
           if [ -z "${run_id}" ]; then
-            echo "No successful upstream run found for ${SOURCE_REPO}:${SOURCE_BRANCH}" >&2
+            echo "No successful upstream run found for ${SOURCE_REPO}:${SOURCE_BRANCH} matching workflow '${SOURCE_WORKFLOW}' (fallback '${SOURCE_WORKFLOW_FALLBACK}')." >&2
+            echo "Available successful run paths on this branch:" >&2
+            jq -r '.workflow_runs[]?.path' "${runs_tmp}" | sort -u | sed 's/^/- /' >&2
             exit 1
           fi
 
@@ -91,6 +92,7 @@ jobs:
           updated_at="$(jq -r '.updated_at' <<<"${run}")"
           html_url="$(jq -r '.html_url' <<<"${run}")"
           head_commit_url="https://github.com/${SOURCE_REPO}/commit/${head_sha}"
+          workflow_path="$(jq -r '.path' <<<"${run}")"
 
           current_file_run_id=""
           if [ -f release-info.json ]; then
