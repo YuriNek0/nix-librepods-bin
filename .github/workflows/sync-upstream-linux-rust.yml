@@ -39,47 +39,73 @@ jobs:
         run: |
           set -euo pipefail
 
-          runs_tmp="$(mktemp)"
           api_url="https://api.github.com/repos/${SOURCE_REPO}/actions/runs"
-
-          http_code="$(curl -sS \
-            -o "${runs_tmp}" \
-            -w '%{http_code}' \
-            --get "${api_url}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            --data-urlencode "branch=${SOURCE_BRANCH}" \
-            --data-urlencode "status=success" \
-            --data-urlencode "per_page=100")"
-
-          if [ "${http_code}" != "200" ]; then
-            api_message="$(jq -r '.message // "unknown error"' "${runs_tmp}" 2>/dev/null || true)"
-            echo "Failed to list workflow runs from ${SOURCE_REPO} (HTTP ${http_code}): ${api_message}" >&2
-            echo "GitHub docs: this endpoint requires read access to the repository; for private repos, PATs need 'repo' (classic) or Actions:read + Contents:read (fine-grained)." >&2
-            echo "See: https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository" >&2
-            exit 1
+          wanted_workflow_path=".github/workflows/${SOURCE_WORKFLOW##*/}"
+          fallback_workflow_path=""
+          if [ -n "${SOURCE_WORKFLOW_FALLBACK}" ]; then
+            fallback_workflow_path=".github/workflows/${SOURCE_WORKFLOW_FALLBACK##*/}"
           fi
 
-          run="$(jq -c \
-            --arg wf "${SOURCE_WORKFLOW}" \
-            --arg wfFallback "${SOURCE_WORKFLOW_FALLBACK}" '
-              def normalize($w): if ($w | startswith(".github/workflows/")) then $w else ".github/workflows/" + $w end;
-              def present($w): ($w != null and $w != "");
+          run=""
+          collected_paths="$(mktemp)"
+          : >"${collected_paths}"
 
-              [ .workflow_runs[]?
-                | select(
-                    (present($wf) and .path == normalize($wf))
-                    or (present($wfFallback) and .path == normalize($wfFallback))
-                  )
-              ][0]
-            ' "${runs_tmp}")"
+          for page in 1 2 3 4 5 6 7 8 9 10; do
+            runs_tmp="$(mktemp)"
+            http_code="$(curl -sS \
+              -o "${runs_tmp}" \
+              -w '%{http_code}' \
+              --get "${api_url}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data-urlencode "per_page=100" \
+              --data-urlencode "page=${page}")"
+
+            if [ "${http_code}" != "200" ]; then
+              api_message="$(jq -r '.message // "unknown error"' "${runs_tmp}" 2>/dev/null || true)"
+              echo "Failed to list workflow runs from ${SOURCE_REPO} (HTTP ${http_code}): ${api_message}" >&2
+              echo "GitHub docs: this endpoint requires read access to the repository; for private repos, PATs need 'repo' (classic) or Actions:read + Contents:read (fine-grained)." >&2
+              echo "See: https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository" >&2
+              exit 1
+            fi
+
+            jq -r --arg branch "${SOURCE_BRANCH}" '
+              .workflow_runs[]?
+              | select(.head_branch == $branch)
+              | select(.conclusion == "success")
+              | .path
+            ' "${runs_tmp}" >>"${collected_paths}"
+
+            run="$(jq -c \
+              --arg branch "${SOURCE_BRANCH}" \
+              --arg wantedPath "${wanted_workflow_path}" \
+              --arg fallbackPath "${fallback_workflow_path}" '
+                [ .workflow_runs[]?
+                  | select(.head_branch == $branch)
+                  | select(.conclusion == "success")
+                  | select(
+                      .path == $wantedPath
+                      or ($fallbackPath != "" and .path == $fallbackPath)
+                    )
+                ][0]
+              ' "${runs_tmp}")"
+
+            run_id="$(jq -r '.id // empty' <<<"${run}")"
+            if [ -n "${run_id}" ]; then
+              break
+            fi
+
+            page_count="$(jq '.workflow_runs | length' "${runs_tmp}")"
+            if [ "${page_count}" -lt 100 ]; then
+              break
+            fi
+          done
 
           run_id="$(jq -r '.id // empty' <<<"${run}")"
           if [ -z "${run_id}" ]; then
             echo "No successful upstream run found for ${SOURCE_REPO}:${SOURCE_BRANCH} matching workflow '${SOURCE_WORKFLOW}' (fallback '${SOURCE_WORKFLOW_FALLBACK}')." >&2
             echo "Available successful run paths on this branch:" >&2
-            jq -r '.workflow_runs[]?.path' "${runs_tmp}" | sort -u | sed 's/^/- /' >&2
+            sort -u "${collected_paths}" | sed '/^$/d; s/^/- /' >&2
             exit 1
           fi
 
