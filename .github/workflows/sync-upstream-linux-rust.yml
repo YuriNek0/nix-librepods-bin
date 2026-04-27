@@ -16,6 +16,7 @@ concurrency:
 env:
   SOURCE_REPO: kavishdevar/librepods
   SOURCE_WORKFLOW: ci-linux-rust.yml
+  SOURCE_WORKFLOW_FALLBACK: linux-build.yml
   SOURCE_BRANCH: linux/rust
   RELEASE_TAG: linux-rust-latest
   RELEASE_TITLE: LibrePods Linux Rust (latest successful upstream CI)
@@ -38,7 +39,41 @@ jobs:
         run: |
           set -euo pipefail
 
-          run_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows/${SOURCE_WORKFLOW}/runs" -f branch="${SOURCE_BRANCH}" -f status="success" -f per_page="1")"
+          workflows_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows")"
+
+          workflow_id=""
+          workflow_path=""
+
+          for candidate in "${SOURCE_WORKFLOW}" "${SOURCE_WORKFLOW_FALLBACK}"; do
+            [ -z "${candidate}" ] && continue
+
+            candidate_base="${candidate##*/}"
+            candidate_id="$(jq -r --arg candidate "${candidate}" --arg candidateBase "${candidate_base}" '
+              .workflows[]?
+              | select(
+                  (.path == $candidate)
+                  or (.path | endswith("/" + $candidateBase))
+                  or (.name == $candidate)
+                  or ((.id | tostring) == $candidate)
+                )
+              | .id
+            ' <<<"${workflows_json}" | head -n 1)"
+
+            if [ -n "${candidate_id}" ]; then
+              workflow_id="${candidate_id}"
+              workflow_path="$(jq -r --argjson id "${candidate_id}" '.workflows[]? | select(.id == $id) | .path' <<<"${workflows_json}" | head -n 1)"
+              break
+            fi
+          done
+
+          if [ -z "${workflow_id}" ]; then
+            echo "Could not resolve upstream workflow '${SOURCE_WORKFLOW}' (fallback '${SOURCE_WORKFLOW_FALLBACK}') in ${SOURCE_REPO}" >&2
+            echo "Available workflows:" >&2
+            jq -r '.workflows[]? | "- \(.name) [\(.path)]"' <<<"${workflows_json}" >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "repos/${SOURCE_REPO}/actions/workflows/${workflow_id}/runs" -f branch="${SOURCE_BRANCH}" -f status="success" -f per_page="1")"
           run="$(jq '.workflow_runs[0]' <<<"${run_json}")"
 
           run_id="$(jq -r '.id // empty' <<<"${run}")"
@@ -85,6 +120,7 @@ jobs:
             echo "updated_at=${updated_at}"
             echo "html_url=${html_url}"
             echo "head_commit_url=${head_commit_url}"
+            echo "workflow_path=${workflow_path}"
           } >>"${GITHUB_OUTPUT}"
 
       - name: Download upstream artifacts
@@ -129,6 +165,7 @@ jobs:
           UPDATED_AT: ${{ steps.upstream.outputs.updated_at }}
           RUN_URL: ${{ steps.upstream.outputs.html_url }}
           COMMIT_URL: ${{ steps.upstream.outputs.head_commit_url }}
+          WORKFLOW_PATH: ${{ steps.upstream.outputs.workflow_path }}
         run: |
           set -euo pipefail
 
@@ -143,7 +180,7 @@ jobs:
 
           jq -n \
             --arg sourceRepo "${SOURCE_REPO}" \
-            --arg workflow "${SOURCE_WORKFLOW}" \
+            --arg workflow "${WORKFLOW_PATH}" \
             --arg branch "${SOURCE_BRANCH}" \
             --argjson runId "${RUN_ID}" \
             --argjson runNumber "${RUN_NUMBER}" \
@@ -206,6 +243,7 @@ jobs:
           Tracks the latest successful upstream CI run from ${SOURCE_REPO}.
 
           - Source workflow: ${SOURCE_WORKFLOW}
+          - Source workflow path: ${WORKFLOW_PATH}
           - Source branch: ${SOURCE_BRANCH}
           - Source run: #${RUN_NUMBER} (attempt ${RUN_ATTEMPT})
           - Source actor: ${ACTOR}
