@@ -3,32 +3,32 @@
     "repository": "kavishdevar/librepods",
     "workflow": ".github/workflows/ci-linux-rust.yml",
     "branch": "linux/rust",
-    "runId": 24656336964,
-    "runNumber": 19,
+    "runId": 25080113527,
+    "runNumber": 20,
     "runAttempt": 1,
-    "runUrl": "https://github.com/kavishdevar/librepods/actions/runs/24656336964",
-    "headSha": "a78a8bb6befae2649f35978a25cef4b32e536514",
-    "headCommitUrl": "https://github.com/kavishdevar/librepods/commit/a78a8bb6befae2649f35978a25cef4b32e536514",
+    "runUrl": "https://github.com/kavishdevar/librepods/actions/runs/25080113527",
+    "headSha": "4a9a2e7b642e4d2ec2e4e1259ffee0a06e108022",
+    "headCommitUrl": "https://github.com/kavishdevar/librepods/commit/4a9a2e7b642e4d2ec2e4e1259ffee0a06e108022",
     "actor": "kavishdevar",
-    "startedAt": "2026-04-20T08:27:00Z",
-    "updatedAt": "2026-04-20T08:32:53Z"
+    "startedAt": "2026-04-28T22:05:34Z",
+    "updatedAt": "2026-04-28T22:11:13Z"
   },
   "release": {
     "repository": "YuriNek0/nix-librepods-bin",
     "tag": "linux-rust-latest",
-    "version": "run-19.1",
-    "updatedAt": "2026-04-27T15:33:31Z"
+    "version": "run-20.1",
+    "updatedAt": "2026-05-04T08:28:41Z"
   },
   "assets": {
     "librepods": {
       "name": "librepods",
       "url": "https://github.com/YuriNek0/nix-librepods-bin/releases/download/linux-rust-latest/librepods",
-      "sha256": "sha256-kPliFhy6nWn+fEDig0TLVe/VBr+JOoMFYHWbi3a08Vo="
+      "sha256": "sha256-9KSVgALfXMvO12HxyukkT/2mVBdmafXJCI4CC2zwllE="
     },
     "appImage": {
       "name": "librepods-x86_64.AppImage",
       "url": "https://github.com/YuriNek0/nix-librepods-bin/releases/download/linux-rust-latest/librepods-x86_64.AppImage",
-      "sha256": "sha256-FPUjdh4x7Acboobnteu4hg1J89xp31ze69TsuLlQfSI="
+      "sha256": "sha256-/07Vet6wDzLekRTT+pd8n5193GtXklBd0wj31ZtDDYg="
     }
   }
 }
