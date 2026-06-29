@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_REPO: kavishdevar/librepods
+  SOURCE_REPO: librepods-org/librepods
   SOURCE_WORKFLOW: ci-linux-rust.yml
   SOURCE_WORKFLOW_FALLBACK: linux-build.yml
   SOURCE_BRANCH: linux/rust
